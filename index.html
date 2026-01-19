@@ -70,25 +70,19 @@
         z-index: 10;
         color: #00ff00;
         font-family: monospace;
-        font-size: 1.2rem;
+        font-size: 1.5rem;
         font-weight: bold;
         text-shadow: 0 0 5px #00ff00;
-        background: rgba(0, 20, 0, 0.8);
-        padding: 10px;
+        background: rgba(0, 20, 0, 0.6);
+        padding: 5px 10px;
         border: 1px solid #004400;
         width: 80%;
-        height: 60px;
-        text-align: left;
+        text-align: center;
+        min-height: 1.8rem;
         word-wrap: break-word;
-        white-space: pre-wrap;
-        overflow-y: auto;
         display: none; /* Hidden until locked */
         cursor: pointer;
     }
-    
-    /* Scrollbar for feed */
-    #morse-feed::-webkit-scrollbar { width: 5px; }
-    #morse-feed::-webkit-scrollbar-thumb { background: #004400; }
 
     /* Canvas for Static/Waves */
     canvas {
@@ -145,12 +139,12 @@
 </head>
 <body>
 
-<div id="toast">DATA COPIED TO CLIPBOARD</div>
+<div id="toast">DECODED MESSAGE COPIED</div>
 
 <div id="screen">
     <div id="beacon"></div>
     <div id="message-layer">SIGNAL LOST</div>
-    <div id="morse-feed" title="Double click to copy"></div>
+    <div id="morse-feed"></div>
     <canvas id="signal-canvas"></canvas>
 </div>
 
@@ -265,9 +259,8 @@
             ':': '---...', ' ': '/'
         };
 
-        const DOT_MS = 100; // Increased speed slightly for the long message
+        const DOT_MS = 150; 
         let isTransmitting = false;
-        let isComplete = false;
 
         function generateSequence(text) {
             const seq = [];
@@ -277,7 +270,7 @@
                 const code = morseMap[char];
                 if (code === '/') {
                     // Word Space: Add a visual space
-                    seq.push({t: 0, delay: DOT_MS * 7, symbol: '   '}); 
+                    seq.push({t: 0, delay: DOT_MS * 7, symbol: '&nbsp;&nbsp;'}); 
                 } else if (code) {
                     // Letters
                     for (let symbol of code) {
@@ -287,7 +280,7 @@
                         seq.push({t: 0, delay: DOT_MS}); 
                     }
                     // Inter-char gap (add small space)
-                    seq.push({t: 0, delay: DOT_MS * 3, symbol: ' '}); 
+                    seq.push({t: 0, delay: DOT_MS * 2, symbol: '&nbsp;'}); 
                 }
             }
             return seq;
@@ -296,38 +289,36 @@
         const transmissionSequence = generateSequence(secretText);
 
         async function startTransmission() {
-            if(isTransmitting || isComplete) return;
+            if(isTransmitting) return;
             isTransmitting = true;
-            morseFeed.innerHTML = ""; // Clear start
 
-            for (let item of transmissionSequence) {
-                if(!signalLocked) break; 
+            while(signalLocked) { 
+                // Clear feed on loop start
+                morseFeed.innerHTML = "";
+                
+                for (let item of transmissionSequence) {
+                    if(!signalLocked) break; 
 
-                // Update Feed
-                if(item.symbol) {
-                    morseFeed.innerHTML += item.symbol;
-                    morseFeed.scrollTop = morseFeed.scrollHeight;
+                    // Update Feed
+                    if(item.symbol) {
+                        morseFeed.innerHTML += item.symbol;
+                        // Auto scroll
+                        morseFeed.scrollTop = morseFeed.scrollHeight;
+                    }
+
+                    if (item.t > 0) {
+                        beacon.classList.add('active'); 
+                        playBeep(item.t); 
+                        await wait(item.t);
+                        beacon.classList.remove('active'); 
+                    } else {
+                        await wait(item.delay); 
+                    }
                 }
-
-                if (item.t > 0) {
-                    beacon.classList.add('active'); 
-                    playBeep(item.t); 
-                    await wait(item.t);
-                    beacon.classList.remove('active'); 
-                } else {
-                    await wait(item.delay); 
-                }
+                await wait(3000); // Pause before repeating
             }
-            
             isTransmitting = false;
             beacon.classList.remove('active');
-            
-            if(signalLocked) {
-                isComplete = true;
-                msgLayer.textContent = "TRANSMISSION COMPLETE // DECODE DATA";
-                msgLayer.style.color = "#00ff00"; 
-                // Stop audio cues if any linger
-            }
         }
 
         function wait(ms) {
@@ -336,11 +327,8 @@
 
         // ---------------- COPY LOGIC ----------------
         morseFeed.addEventListener('dblclick', () => {
-            // Copy ONLY what is currently in the box (The dots/dashes played so far)
-            const textToCopy = morseFeed.innerText;
-            
             const el = document.createElement('textarea');
-            el.value = textToCopy;
+            el.value = secretText; // Copy the English text, not the dots/dashes
             el.setAttribute('readonly', '');
             el.style.position = 'absolute';
             el.style.left = '-9999px';
@@ -371,16 +359,11 @@
             if (strength > 0.95) {
                 if(!signalLocked) {
                     signalLocked = true;
-                    if(!isComplete) {
-                        msgLayer.textContent = "SIGNAL LOCKED // RECEIVING...";
-                        msgLayer.style.color = "#00ff00"; 
-                        msgLayer.style.textShadow = "0 0 10px #00ff00";
-                        morseFeed.style.display = "block"; // Show box
-                        startTransmission(); 
-                    } else {
-                        msgLayer.textContent = "TRANSMISSION COMPLETE // DECODE DATA";
-                        morseFeed.style.display = "block";
-                    }
+                    msgLayer.textContent = "SIGNAL LOCKED // DECODING...";
+                    msgLayer.style.color = "#00ff00"; 
+                    msgLayer.style.textShadow = "0 0 10px #00ff00";
+                    morseFeed.style.display = "block"; // Show box
+                    startTransmission(); 
                 }
             } else {
                 if(signalLocked) {
@@ -389,7 +372,7 @@
                     msgLayer.style.color = "#ff9900"; 
                     msgLayer.style.textShadow = "0 0 10px #ff9900";
                     morseFeed.style.display = "none"; // Hide box
-                    // Transmission pauses naturally due to break check
+                    morseFeed.innerHTML = ""; // Clear text
                 }
             }
 
