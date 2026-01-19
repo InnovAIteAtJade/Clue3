@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGNAL INTERCEPT</title>
+<style>
+    body {
+        margin: 0;
+        background: #111;
+        color: #ff9900;
+        font-family: "Courier New", monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        overflow: hidden;
+        user-select: none;
+    }
+
+    #screen {
+        width: 600px;
+        height: 350px; 
+        background: black;
+        border: 4px solid #333;
+        position: relative;
+        overflow: hidden;
+        margin-bottom: 30px;
+        box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* The Morse Beacon Light */
+    #beacon {
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background-color: #220000; /* Dark/Off state */
+        border: 2px solid #440000;
+        margin-bottom: 10px;
+        z-index: 10;
+        transition: background-color 0.05s;
+        box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    /* Active Flash State */
+    #beacon.active {
+        background-color: #ff0000;
+        box-shadow: 0 0 40px #ff0000, 0 0 10px #fff inset;
+        border-color: #ffcccc;
+    }
+
+    #message-layer {
+        font-size: 1.2rem;
+        font-weight: bold;
+        color: #ff9900;
+        text-shadow: 0 0 10px #ff9900;
+        z-index: 10;
+        text-align: center;
+        min-height: 1.5em;
+        margin-bottom: 10px;
+    }
+
+    /* MORSE OUTPUT BOX */
+    #morse-feed {
+        z-index: 10;
+        color: #00ff00;
+        font-family: monospace;
+        font-size: 1.2rem;
+        font-weight: bold;
+        text-shadow: 0 0 5px #00ff00;
+        background: rgba(0, 20, 0, 0.8);
+        padding: 10px;
+        border: 1px solid #004400;
+        width: 80%;
+        height: 60px;
+        text-align: left;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+        overflow-y: auto;
+        display: none; /* Hidden until locked */
+        cursor: pointer;
+    }
+    
+    /* Scrollbar for feed */
+    #morse-feed::-webkit-scrollbar { width: 5px; }
+    #morse-feed::-webkit-scrollbar-thumb { background: #004400; }
+
+    /* Canvas for Static/Waves */
+    canvas {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 1;
+        opacity: 0.6;
+    }
+
+    .controls {
+        width: 600px;
+        background: #222;
+        padding: 20px;
+        border: 1px solid #444;
+        text-align: center;
+    }
+
+    input[type=range] {
+        width: 100%;
+        cursor: pointer;
+    }
+
+    #freq-display {
+        font-size: 1.5rem;
+        margin-bottom: 10px;
+        font-weight: bold;
+        color: #ff9900;
+    }
+
+    .hint {
+        margin-top: 20px;
+        color: #555;
+        font-size: 0.8rem;
+    }
+
+    /* Toast Notification */
+    #toast {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #00ff41;
+        color: #000;
+        padding: 10px 20px;
+        font-weight: bold;
+        display: none;
+        z-index: 30;
+        box-shadow: 0 0 15px #00ff41;
+        border: 2px solid #fff;
+    }
+</style>
+</head>
+<body>
+
+<div id="toast">DATA COPIED TO CLIPBOARD</div>
+
+<div id="screen">
+    <div id="beacon"></div>
+    <div id="message-layer">SIGNAL LOST</div>
+    <div id="morse-feed" title="Double click to copy"></div>
+    <canvas id="signal-canvas"></canvas>
+</div>
+
+<div class="controls">
+    <div id="freq-display">88.0 MHz</div>
+    <input type="range" id="tuner" min="880" max="1080" value="880">
+</div>
+
+<div class="hint">Use slider to intercept the carrier signal.<br>Decode the flashing light.</div>
+
+<script>
+    (function() {
+        const canvas = document.getElementById('signal-canvas');
+        const ctx = canvas.getContext('2d');
+        const tuner = document.getElementById('tuner');
+        const display = document.getElementById('freq-display');
+        const msgLayer = document.getElementById('message-layer');
+        const beacon = document.getElementById('beacon');
+        const morseFeed = document.getElementById('morse-feed');
+        const toast = document.getElementById('toast');
+
+        // Canvas setup
+        canvas.width = 600;
+        canvas.height = 350;
+        const w = canvas.width;
+        const h = canvas.height;
+
+        // Target Frequency (Obfuscated: 1045)
+        const _tF = "MTA0NQ=="; 
+        const targetFreq = parseInt(atob(_tF)); 
+        const tolerance = 10; 
+
+        let noiseOffset = 0;
+        let signalLocked = false;
+
+        // ---------------- AUDIO SETUP ----------------
+        let audioCtx;
+        let staticNode;
+        let staticGain;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Static Noise
+                const bufferSize = audioCtx.sampleRate * 2; 
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+
+                staticNode = audioCtx.createBufferSource();
+                staticNode.buffer = buffer;
+                staticNode.loop = true;
+                
+                staticGain = audioCtx.createGain();
+                staticGain.gain.value = 0; 
+
+                staticNode.connect(staticGain);
+                staticGain.connect(audioCtx.destination);
+                staticNode.start();
+            }
+            
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        tuner.addEventListener('input', initAudio);
+        tuner.addEventListener('mousedown', initAudio);
+
+        function updateStaticVolume(strength) {
+            if (!staticGain) return;
+            const vol = (1 - strength) * 0.15;
+            staticGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+        }
+
+        function playBeep(durationMs) {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'sine';
+            osc.frequency.value = 600; 
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            const now = audioCtx.currentTime;
+            osc.start(now);
+            osc.stop(now + (durationMs / 1000));
+            
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(0.2, now + 0.01);
+            gain.gain.linearRampToValueAtTime(0, now + (durationMs / 1000) - 0.01);
+        }
+
+        // ---------------- MORSE CODE LOGIC ----------------
+        
+        const _msg = "QmFsYW5jZSBpcyBrZXk6IGZpcnN0IHRvIHRoZSByaWdodCwgdGhlbiB0byB0aGUgbGVmdC4gT25seSB0aGVuIHdpbGwgdGhlIGV4aXQgYXBwZWFyLiBCdXQgdGFrZSB0aGUgZGlyZWN0aW9uIHRoYXQgZmVsdCB3cm9uZyBmb3IgYSBtb21lbnQsIHRoZSBvbmUgeW91IGFsbW9zdCBpZ25vcmVkLCBhbmQgY291bnQgb25seSB0aGF0LiBOb3csIGxvb2sgaW50byBUZWNoVGFsa3MgZm9yIHRoZSBmb3VydGg=";
+        const secretText = atob(_msg);
+
+        const morseMap = {
+            'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
+            'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
+            'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
+            'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+            'Y': '-.--', 'Z': '--..', '1': '.----', '2': '..---', '3': '...--',
+            '4': '....-', '5': '.....', '6': '-....', '7': '--...', '8': '---..',
+            '9': '----.', '0': '-----', '.': '.-.-.-', ',': '--..--', '?': '..--..',
+            ':': '---...', ' ': '/'
+        };
+
+        const DOT_MS = 100; // Increased speed slightly for the long message
+        let isTransmitting = false;
+        let isComplete = false;
+
+        function generateSequence(text) {
+            const seq = [];
+            const cleanText = text.toUpperCase().replace(/[^A-Z0-9 .,:]/g, '');
+            
+            for (let char of cleanText) {
+                const code = morseMap[char];
+                if (code === '/') {
+                    // Word Space: Add a visual space
+                    seq.push({t: 0, delay: DOT_MS * 7, symbol: '   '}); 
+                } else if (code) {
+                    // Letters
+                    for (let symbol of code) {
+                        if (symbol === '.') seq.push({t: DOT_MS, symbol: '.'});
+                        else if (symbol === '-') seq.push({t: DOT_MS * 3, symbol: '-'});
+                        // Intra-char gap (no symbol)
+                        seq.push({t: 0, delay: DOT_MS}); 
+                    }
+                    // Inter-char gap (add small space)
+                    seq.push({t: 0, delay: DOT_MS * 3, symbol: ' '}); 
+                }
+            }
+            return seq;
+        }
+
+        const transmissionSequence = generateSequence(secretText);
+
+        async function startTransmission() {
+            if(isTransmitting || isComplete) return;
+            isTransmitting = true;
+            morseFeed.innerHTML = ""; // Clear start
+
+            for (let item of transmissionSequence) {
+                if(!signalLocked) break; 
+
+                // Update Feed
+                if(item.symbol) {
+                    morseFeed.innerHTML += item.symbol;
+                    morseFeed.scrollTop = morseFeed.scrollHeight;
+                }
+
+                if (item.t > 0) {
+                    beacon.classList.add('active'); 
+                    playBeep(item.t); 
+                    await wait(item.t);
+                    beacon.classList.remove('active'); 
+                } else {
+                    await wait(item.delay); 
+                }
+            }
+            
+            isTransmitting = false;
+            beacon.classList.remove('active');
+            
+            if(signalLocked) {
+                isComplete = true;
+                msgLayer.textContent = "TRANSMISSION COMPLETE // DECODE DATA";
+                msgLayer.style.color = "#00ff00"; 
+                // Stop audio cues if any linger
+            }
+        }
+
+        function wait(ms) {
+            return new Promise(r => setTimeout(r, ms));
+        }
+
+        // ---------------- COPY LOGIC ----------------
+        morseFeed.addEventListener('dblclick', () => {
+            // Copy ONLY what is currently in the box (The dots/dashes played so far)
+            const textToCopy = morseFeed.innerText;
+            
+            const el = document.createElement('textarea');
+            el.value = textToCopy;
+            el.setAttribute('readonly', '');
+            el.style.position = 'absolute';
+            el.style.left = '-9999px';
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 2000);
+        });
+
+        // ---------------- VISUALIZER LOGIC ----------------
+
+        function draw() {
+            const currentVal = parseInt(tuner.value);
+            const dist = Math.abs(currentVal - targetFreq);
+            
+            let strength = 0;
+            if (dist < tolerance) {
+                strength = 1 - (dist / tolerance);
+            }
+
+            updateStaticVolume(strength);
+
+            display.textContent = (currentVal / 10).toFixed(1) + " MHz";
+            
+            if (strength > 0.95) {
+                if(!signalLocked) {
+                    signalLocked = true;
+                    if(!isComplete) {
+                        msgLayer.textContent = "SIGNAL LOCKED // RECEIVING...";
+                        msgLayer.style.color = "#00ff00"; 
+                        msgLayer.style.textShadow = "0 0 10px #00ff00";
+                        morseFeed.style.display = "block"; // Show box
+                        startTransmission(); 
+                    } else {
+                        msgLayer.textContent = "TRANSMISSION COMPLETE // DECODE DATA";
+                        morseFeed.style.display = "block";
+                    }
+                }
+            } else {
+                if(signalLocked) {
+                    signalLocked = false;
+                    msgLayer.textContent = "SIGNAL LOST";
+                    msgLayer.style.color = "#ff9900"; 
+                    msgLayer.style.textShadow = "0 0 10px #ff9900";
+                    morseFeed.style.display = "none"; // Hide box
+                    // Transmission pauses naturally due to break check
+                }
+            }
+
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.beginPath();
+            const r = Math.floor(255 * (1-strength));
+            const g = Math.floor(153 + (102 * strength)); 
+            
+            ctx.strokeStyle = `rgba(${r}, ${g}, 0, ${0.5 + strength*0.5})`;
+            ctx.lineWidth = 2 + (strength * 2);
+
+            noiseOffset += 0.2;
+
+            for (let x = 0; x < w; x++) {
+                let y = h / 2;
+
+                if (strength > 0.8) {
+                    const jitter = (1 - strength) * 10;
+                    y += Math.sin(x * 0.05 + noiseOffset) * 80;
+                    y += (Math.random() - 0.5) * jitter;
+                } else {
+                    const noiseAmt = (1 - strength) * 60;
+                    y += (Math.random() - 0.5) * noiseAmt;
+                    y += Math.sin(x * 0.05 + noiseOffset) * (strength * 80);
+                }
+
+                if (x === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            requestAnimationFrame(draw);
+        }
+
+        draw();
+    })();
+</script>
+
+</body>
+</html>
