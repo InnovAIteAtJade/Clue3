@@ -134,7 +134,7 @@
 </head>
 <body>
 
-<div id="toast">DECODED MESSAGE COPIED</div>
+<div id="toast">MORSE SEQUENCE COPIED</div>
 
 <div id="screen">
     <div id="beacon"></div>
@@ -308,8 +308,19 @@
         }
 
         morseFeed.addEventListener('dblclick', () => {
+            // Generate full Morse string for clipboard
+            const cleanText = secretText.toUpperCase().replace(/[^A-Z0-9 .,:]/g, '');
+            let morseCodeCopy = "";
+            
+            for (let char of cleanText) {
+                const code = morseMap[char];
+                if (code) {
+                    morseCodeCopy += code + " ";
+                }
+            }
+
             const el = document.createElement('textarea');
-            el.value = secretText;
+            el.value = morseCodeCopy.trim(); 
             el.setAttribute('readonly', '');
             el.style.position = 'absolute';
             el.style.left = '-9999px';
@@ -318,6 +329,7 @@
             document.execCommand('copy');
             document.body.removeChild(el);
 
+            toast.textContent = "MORSE SEQUENCE COPIED";
             toast.style.display = 'block';
             setTimeout(() => { toast.style.display = 'none'; }, 2000);
         });
